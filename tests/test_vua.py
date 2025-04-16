@@ -56,7 +56,7 @@ class TestVUAConfig(unittest.TestCase):
             logger.info(f"VUAPath: {vua_path}")
             cache = VUA(VUAConfig, vua_path)
 
-            nr_tokens = 500
+            nr_tokens = 3000
             tokens = torch.randint(low=0, high=0xffff, size=(1, nr_tokens), dtype=torch.uint16)
             half_tokens = tokens[:, :nr_tokens//2]
             quarter_tokens = tokens[:, :nr_tokens//4]
@@ -67,7 +67,7 @@ class TestVUAConfig(unittest.TestCase):
             self.assertEqual(len(trimmed_half) % VUAConfig.split_factor, 0,
                 "Trimmed tensor length should be divisible by split_factor")
 
-            kvcache = generate_rand_kvcache(32, half_tokens.size(1), 1, 128, 64)
+            kvcache = generate_rand_kvcache(32, half_tokens.size(1), 1, 32, 16)
             cache.put(trimmed_half, kvcache)
 
             logger.info("---- Doing a get with a double length query")
@@ -93,7 +93,7 @@ class TestVUAConfig(unittest.TestCase):
 
             batched_seqs = torch.randint(low=0, high=0xffff,
                                          size=(3, cache.config().split_factor * 10), dtype=torch.uint16)
-            batched_kvcache = generate_rand_kvcache(24, batched_seqs.size(1), batched_seqs.size(0), 16, 32)
+            batched_kvcache = generate_rand_kvcache(24, batched_seqs.size(1), batched_seqs.size(0), 8, 16)
             cache.put(batched_seqs, batched_kvcache)
 
 

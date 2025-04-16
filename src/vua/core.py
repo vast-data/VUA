@@ -3,6 +3,7 @@ import os
 import logging
 import torch
 import pickle
+import hashlib
 from typing import NamedTuple, Tuple, List
 
 
@@ -18,7 +19,7 @@ class SplitFactorError(Exception):
 
 
 class VUAConfig:
-    split_factor = 256//6  # NFS filename limit
+    split_factor = 600
 
     @classmethod
     def tokens_to_path(cls, tokens):
@@ -51,6 +52,7 @@ class VUAConfig:
             # Convert each token to hex (without prefix) and join with commas
             hex_tokens = [format(token, 'x') for token in group]
             component = ",".join(hex_tokens)
+            component = hashlib.sha1(component.encode('utf-8')).hexdigest()
             path_components.append(component)
         return path_components  # List of strings
 
