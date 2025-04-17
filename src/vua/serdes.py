@@ -4,7 +4,7 @@ import numpy as np
 import json
 
 
-def tensor_to_bytes(t):
+def tensor_to_bytes(t, name):
     dtype = t.dtype
     if dtype is np.float16 or dtype is torch.float16:
         dtype = "F16"
@@ -31,8 +31,9 @@ def tensor_to_bytes(t):
     tensor['dtype'] = dtype
     tensor['shape'] = [int(x) for x in t.size()]
     data = t.contiguous().cpu().view(torch.uint8).numpy().tobytes()
-    tensor['offsets'] = [0, len(data)]
-    meta = dict(tensor=tensor)
+    tensor['data_offsets'] = [0, len(data)]
+    meta = dict()
+    meta[name] = tensor
     str_meta = bytes(json.dumps(meta), 'utf-8')
     n = len(str_meta)
     str_meta += b" " * (((n + 7) & ~7) - n)
@@ -40,15 +41,15 @@ def tensor_to_bytes(t):
     return struct.pack('L', n) + str_meta + t.contiguous().cpu().view(torch.uint8).numpy().tobytes()
 
 
-def bytes_to_tensor(b):
+def bytes_to_tensor(b, name):
     size, = struct.unpack('L', b[:8])
     meta = json.loads(b[8:8 + size])
     payload_offset = size + 8
-    tensor = meta['tensor']
+    tensor = meta[name]
     dtype = tensor['dtype']
-    offsets = tensor['offsets']
+    data_offsets = tensor['data_offsets']
     shape = tensor['shape']
-    data_bytes = b[payload_offset + offsets[0]:payload_offset + offsets[1]]
+    data_bytes = b[payload_offset + data_offsets[0]:payload_offset + data_offsets[1]]
     if dtype == 'BF16':
         dtype = torch.bfloat16
         return torch.frombuffer(data_bytes, dtype=dtype).reshape(shape)

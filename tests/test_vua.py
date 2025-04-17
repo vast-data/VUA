@@ -102,8 +102,8 @@ class TestSerdes(unittest.TestCase):
         # Create a random tensor and test that serializing and deserializing
         # returns a similar tensor
         x = torch.randn(100, 5, 10000)
-        b = tensor_to_bytes(x)
-        x_rec = bytes_to_tensor(b)
+        b = tensor_to_bytes(x, "tensor")
+        x_rec = bytes_to_tensor(b, "tensor")
         self.assertTrue(torch.allclose(x, x_rec.float(), atol=1e-6),
                         "Deserialized tensor does not match the original")
 

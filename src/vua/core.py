@@ -2,7 +2,6 @@ import threading
 import os
 import logging
 import torch
-import pickle
 import hashlib
 from typing import NamedTuple, Tuple, List
 
@@ -181,19 +180,19 @@ class VUA:
                     x.append(t2.clone())
                 sliced_group.append(torch.stack(x))
 
-            sliced_group = serdes.tensor_to_bytes(torch.stack(sliced_group))
+            sliced_group = serdes.tensor_to_bytes(torch.stack(sliced_group), group_hash + ".data")
             sliced_tokens = serdes.tensor_to_bytes(tokens[group_idx*self._config.split_factor:
-                                   (group_idx+1)*self._config.split_factor].clone())
+                                   (group_idx+1)*self._config.split_factor].clone(), group_hash + ".tokens")
 
             # Write data and tokens files
             fd = os.open(os.path.join(group_dir_tmp, "_data.safetensors"), os.O_CREAT | os.O_WRONLY | os.O_TRUNC)
             with os.fdopen(fd, 'wb') as file:
-                pickle.dump(sliced_group, file)
+                file.write(sliced_group)
                 os.fsync(fd)
 
             fd = os.open(os.path.join(group_dir_tmp, "_tokens.safetensors"), os.O_CREAT | os.O_WRONLY | os.O_TRUNC)
             with os.fdopen(fd, 'wb') as file:
-                pickle.dump(sliced_tokens, file)
+                file.write(sliced_tokens)
                 os.fsync(fd)
 
             os.rename(group_dir_tmp, group_dir)
@@ -269,9 +268,9 @@ class VUA:
                 data = None
                 logger.debug(f"loading group idx {group_idx}")
                 with open(os.path.join(group_dir, "_tokens.safetensors"), "rb") as file:
-                    tokens = serdes.bytes_to_tensor(pickle.load(file))
+                    tokens = serdes.bytes_to_tensor(file.read(), group_hash + ".tokens")
                 with open(os.path.join(group_dir, "_data.safetensors"), "rb") as file:
-                    data = serdes.bytes_to_tensor(pickle.load(file))
+                    data = serdes.bytes_to_tensor(file.read(), group_hash + ".data")
                 logger.debug(f"done loading group idx {group_idx}")
                 results.append((group_idx, group_hash, (tokens, data)))
             except FileNotFoundError:
