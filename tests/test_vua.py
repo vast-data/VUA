@@ -26,10 +26,10 @@ def generate_rand_kvcache(n_layers, seq_len, batch_size, num_heads, head_size):
 
 
 class TestVUAConfig(unittest.TestCase):
-    def test_tokens_to_path(self):
+    def test_tokens_to_paths(self):
         # Create a tensor of tokens that is divisible by split_factor
         tokens = torch.arange(VUAConfig.split_factor * 2)
-        paths = VUAConfig.tokens_to_path(tokens)
+        paths = VUAConfig.tokens_to_paths(tokens)
         self.assertEqual(len(paths), 2)
         self.assertTrue(all(isinstance(p, str) for p in paths),
             "Each token group should be converted to a string path component")

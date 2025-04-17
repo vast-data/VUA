@@ -22,17 +22,18 @@ class VUAConfig:
     split_factor = 600
 
     @classmethod
-    def tokens_to_path(cls, tokens):
+    def tokens_to_paths(cls, tokens):
         """
-        Convert a tensor of tokens into a list of directory path components.
+        Convert a tensor of tokens into a list of hash directory names, where each hash
+        includes all tokens from the beginning up to the current group.
 
         Parameters:
             tokens (Tensor): A PyTorch or numpy-compatible tensor of tokens
             with shape [n] or [1, n].
 
         Returns:
-            List[str]: A list of directory names, each representing a group of
-            tokens converted to hexadecimal.
+            List[str]: A list of directory names, each representing a hash of all tokens
+            up to that group.
 
         Raises:
             SplitFactorError: If the total number of tokens is not divisible by
@@ -40,19 +41,19 @@ class VUAConfig:
         """
 
         tokens = tokens.squeeze()
-        # Convert tokens to a list in case they're in a tensor-like format
         token_list = list(tokens)
         if len(token_list) % cls.split_factor != 0:
             raise SplitFactorError(len(token_list), cls.split_factor)
-        num_groups = len(token_list) // cls.split_factor  # Discard remainder
+        num_groups = len(token_list) // cls.split_factor
         path_components = []
+        prev = ""
         for i in range(num_groups):
-            group = token_list[i * cls.split_factor : (i + 1)
-                               * cls.split_factor]
-            # Convert each token to hex (without prefix) and join with commas
-            hex_tokens = [format(token, 'x') for token in group]
+            # Each hash includes all tokens from the beginning up to this group
+            group_tokens = token_list[: (i + 1) * cls.split_factor]
+            hex_tokens = [format(token, 'x') for token in group_tokens]
             component = ",".join(hex_tokens)
-            component = hashlib.sha1(component.encode('utf-8')).hexdigest()
+            component = hashlib.sha1((prev + component).encode('utf-8')).hexdigest()
+            prev = "hash:" + component + ":"
             path_components.append(component)
         return path_components  # List of strings
 
@@ -146,16 +147,32 @@ class VUA:
 
         logger.debug(f"put with {len(tokens)} tokens")
         tokens = tokens.squeeze()
-        path_components = self._config.tokens_to_path(tokens)
+        path_components = self._config.tokens_to_paths(tokens)
 
         # Start with the root path
-        try:
-            current_fd = os.open(self._root_path, os.O_RDONLY | os.O_DIRECTORY)
-        except FileNotFoundError:
-            return None
+        def save_group(group_hash, group_idx):
+            group_dir = os.path.join(self._root_path, group_hash)
+            if os.path.exists(group_dir):
+                return
 
-        for (group_idx, group) in enumerate(path_components):
-            group = path_components[group_idx]
+            group_dir_tmp = group_dir + ".tmp"
+            try:
+                os.mkdir(group_dir_tmp)
+                logger.debug(f"group #{group_idx}: dir created {group_dir_tmp}")
+            except OSError:
+                # check for FileExists
+                pass
+
+            # Create symlink to parent if not the first group
+            if group_idx > 0:
+                parent_hash = path_components[group_idx - 1]
+                parent_link = os.path.join(group_dir_tmp, "parent")
+                try:
+                    os.symlink(os.path.join("..", parent_hash), parent_link)
+                except FileExistsError:
+                    pass
+
+            # Prepare data and tokens for this group
             sliced_group = []
             for layer in data:
                 x = []
@@ -164,36 +181,31 @@ class VUA:
                     x.append(t2.clone())
                 sliced_group.append(torch.stack(x))
 
-            # Have one big 6-dimention matrix so it would be faster to load it into numpy
             sliced_group = serdes.tensor_to_bytes(torch.stack(sliced_group))
             sliced_tokens = serdes.tensor_to_bytes(tokens[group_idx*self._config.split_factor:
                                    (group_idx+1)*self._config.split_factor].clone())
 
-            logger.debug(f"group #{group_idx}")
-
-            try:
-                os.mkdir(group, dir_fd=current_fd)
-                logger.debug(f"group #{group_idx}: sub created")
-            except OSError:
-                # check for FileExists
-                pass
-
-            next_fd = os.open(group, os.O_RDONLY | os.O_DIRECTORY,
-                              dir_fd=current_fd)
-            logger.debug(f"group #{group_idx}: next opened")
-            os.close(current_fd)
-            current_fd = next_fd
-
-            fd = os.open("_data.safetensors", os.O_CREAT | os.O_WRONLY | os.O_TRUNC,
-                         dir_fd=current_fd)
+            # Write data and tokens files
+            fd = os.open(os.path.join(group_dir_tmp, "_data.safetensors"), os.O_CREAT | os.O_WRONLY | os.O_TRUNC)
             with os.fdopen(fd, 'wb') as file:
                 pickle.dump(sliced_group, file)
+                os.fsync(fd)
 
-            fd = os.open("_tokens.safetensors", os.O_CREAT | os.O_WRONLY | os.O_TRUNC,
-                         dir_fd=current_fd)
+            fd = os.open(os.path.join(group_dir_tmp, "_tokens.safetensors"), os.O_CREAT | os.O_WRONLY | os.O_TRUNC)
             with os.fdopen(fd, 'wb') as file:
                 pickle.dump(sliced_tokens, file)
-        os.close(current_fd)
+                os.fsync(fd)
+
+            os.rename(group_dir_tmp, group_dir)
+
+        threads = []
+        for group_idx, group_hash in enumerate(path_components):
+            t = threading.Thread(target=save_group, args=(group_hash, group_idx))
+            t.start()
+            threads.append(t)
+
+        for t in threads:
+            t.join()
 
     def get_closest(self, tokens, device):
         """
@@ -242,108 +254,36 @@ class VUA:
             return results
 
         results = []
-
-        def background_loader(cumulative_path, dir_fd, group_idx):
-            try:
-                try:
-                    tokens = None
-                    data = None
-                    logger.debug(f"loading group idx {group_idx}")
-                    fd = os.open("_tokens.safetensors", os.O_RDONLY, dir_fd=dir_fd)
-                    with os.fdopen(fd, 'rb') as file:
-                        tokens = serdes.bytes_to_tensor(pickle.load(file))
-
-                    fd = os.open("_data.safetensors", os.O_RDONLY, dir_fd=dir_fd)
-                    with os.fdopen(fd, 'rb') as file:
-                        data = serdes.bytes_to_tensor(pickle.load(file))
-
-                    logger.debug(f"done loading group idx {group_idx}")
-                    results.append((group_idx, cumulative_path, (tokens, data)))
-                except FileNotFoundError:
-                    print("not found")
-            finally:
-                os.close(dir_fd)
-
         tokens = tokens.squeeze()
         tokens = self._config.trim_to_split_factor(tokens)
         logger.debug(f"tokens shape: {tokens.size()}")
-        path_components = self._config.tokens_to_path(tokens)
+        path_components = self._config.tokens_to_paths(tokens)
 
-        # Access the root path
-        try:
-            current_fd = os.open(self._root_path, os.O_RDONLY | os.O_DIRECTORY)
-        except FileNotFoundError:
-            return None
-
-        i = 0
-        group_idx = 0
-        group = []
-        nr_previous_components = 0
-
+        # Each group is now a flat directory under root, with symlinks to parent
         threads = []
-        while i < len(path_components) or group:
-            if i < len(path_components):
-                group.append(path_components[i])
-                i += 1
-                candidate = "/".join(group)
-                full = len(candidate) > 3500
-            else:
-                full = True
 
-            if not full:
-                continue
-
-            group_idx += 1
-
-            # Give the kernel the chance to cache all the dentries
-            # of this group
-            subpath = "/".join(group)
-            logger.debug(f"group #{group_idx}: size {len(group)}, "
-                         f"subpath len {len(subpath)} '{subpath[:20]}...'")
-            next_fd = None
+        def load_group(group_hash, group_idx):
+            group_dir = os.path.join(self._root_path, group_hash)
             try:
-                next_fd = os.open(subpath, os.O_RDONLY | os.O_DIRECTORY,
-                                  dir_fd=current_fd)
+                tokens = None
+                data = None
+                logger.debug(f"loading group idx {group_idx}")
+                with open(os.path.join(group_dir, "_tokens.safetensors"), "rb") as file:
+                    tokens = serdes.bytes_to_tensor(pickle.load(file))
+                with open(os.path.join(group_dir, "_data.safetensors"), "rb") as file:
+                    data = serdes.bytes_to_tensor(pickle.load(file))
+                logger.debug(f"done loading group idx {group_idx}")
+                results.append((group_idx, group_hash, (tokens, data)))
             except FileNotFoundError:
-                logger.debug(f"group #{group_idx}: not there")
+                logger.debug(f"group {group_hash} not found")
 
-            # Good, we can try parallel lookup for `_data.safetensors`
-            logger.debug(f"lookup iter {i}")
-            cumulative_path = ""
-            missing = False
-            for thread_idx, comp in enumerate(group, 0):
-                cumulative_path = os.path.join(cumulative_path, comp)
-                try:
-                    new_dir_fd = os.open(cumulative_path, os.O_RDONLY | os.O_DIRECTORY, dir_fd=current_fd)
-                except OSError:
-                    missing = True
-                    break
-                t = threading.Thread(
-                        target=background_loader,
-                        args=(cumulative_path, new_dir_fd,
-                              nr_previous_components + thread_idx))
+        for group_idx, group_hash in enumerate(path_components):
+            t = threading.Thread(target=load_group, args=(group_hash, group_idx))
+            t.start()
+            threads.append(t)
 
-                t.start()
-                threads.append(t)
-
-            # Go to the next path group
-            os.close(current_fd)
-            current_fd = None
-            if next_fd:
-                current_fd = next_fd
-            else:
-                break
-            nr_previous_components += len(group)
-            group = []
-            if missing:
-                break
-
-        # Aggergate the results
-        logger.debug("parallel lookup wait")
         for t in threads:
             t.join()
-
-        logger.debug("parallel lookup end")
 
         if not results:
             return None
