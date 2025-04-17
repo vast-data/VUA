@@ -18,7 +18,7 @@ class SplitFactorError(Exception):
 
 
 class VUAConfig:
-    split_factor = 600
+    split_factor = 200
 
     @classmethod
     def tokens_to_paths(cls, tokens):
