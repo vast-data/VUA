@@ -1,3 +1,9 @@
+<p align="center">
+  <img src="static/vast_stacked_logo_hex_white.jpg" alt="VAST DATA Logo" width="50%"/>
+</p>
+
+---
+
 # VUA
 
 VUA is a system for storing and retrieving key-value caches of deep learning models, utilizing a directory structure derived from token values.
@@ -77,3 +83,10 @@ VUA is a system for storing and retrieving key-value caches of deep learning mod
 6. **Debugging and Logging**
 
    VUA leverages Python’s `logging` module for detailed debug output. Configure custom log handlers during development to monitor directory navigation and cache operations effectively.
+
+# License
+
+VUA is released under the Apache License Version 2.0.
+
+See the file LICENSE for more details.
+
