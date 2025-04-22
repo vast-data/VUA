@@ -13,7 +13,6 @@ from vllm.distributed.kv_transfer.kv_connector.base import KVConnectorBase
 from vllm.sequence import IntermediateTensors
 from torch.nn.utils.rnn import pad_sequence
 from vllm.config import CacheConfig
-from vllm.attention.backends.flash_attn import FlashAttentionMetadata
 from vllm import _custom_ops as ops
 import os
 
@@ -146,6 +145,7 @@ def retrieve_kv(
              entire execute_model should be skipped
     """
 
+    from vllm.attention.backends.flash_attn import FlashAttentionMetadata
     assert isinstance(model_input.attn_metadata, FlashAttentionMetadata), \
         "Only FlashAttention backend is supported for now."
 
@@ -372,6 +372,7 @@ def build_partial_prefill_input(
     """Helper function to rebuild the model input for the current request.
     """
     assert model_input.attn_metadata is not None
+    from vllm.attention.backends.flash_attn import FlashAttentionMetadata
     assert isinstance(model_input.attn_metadata, FlashAttentionMetadata), \
         "Only FlashAttention backend is supported for now."
     assert model_input.attn_metadata.context_lens_tensor is not None
