@@ -10,4 +10,5 @@ export PYTHONPATH=$(pwd)/example
 VLLM_USE_V1=0 PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True python example/vllm-wrap.py serve ${model} --cpu-offload-gb 15 --api-key ${api_key} \
     --enforce-eager \
     --kv-transfer-config \
-    '{"kv_connector":"RemoteStorageConnector","kv_role":"kv_both","kv_rank":1,"kv_parallel_size":1,"kv_buffer_size":5e9}'
+    '{"kv_connector":"RemoteStorageConnector","kv_role":"kv_both","kv_rank":1,"kv_parallel_size":1,"kv_buffer_size":5e9}' \
+    "$@"
