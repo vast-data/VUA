@@ -70,13 +70,13 @@ VUA is a system for storing and retrieving key-value caches of deep learning mod
    - Usage with 'transformers' library
 
    ```
-   uv run pyth./example/on-transformers.py
+   uv run python ./example/on-transformers.py
    ```
 
    - Usage to experimental vLLM connector for offline kvcache storage
 
    ```
-   uv run ./serve-vllm.sh
+   uv run ./example/serve-vllm.sh
    ```
 
 
