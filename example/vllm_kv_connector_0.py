@@ -16,11 +16,19 @@ from vllm.config import CacheConfig
 from vllm.attention.backends.flash_attn import FlashAttentionMetadata
 from vllm import _custom_ops as ops
 import os
+import time
 
 if TYPE_CHECKING:
     from vllm.worker.model_runner import ModelInputForGPUWithSamplingMetadata
 
 logger = logging.getLogger(__name__)
+logger.handlers.clear()
+logger.propagate = False
+ch = logging.StreamHandler()
+ch.setLevel('INFO')
+logger.addHandler(ch)
+logger.setLevel('INFO')
+
 
 vuacache = None
 
@@ -95,7 +103,9 @@ class RemoteStorageConnector(KVConnectorBase):
 
             prefix_trimmed = vuacache.config().trim_to_split_factor(current_tokens)
             if not read_only_cache:
+                before_put = time.time()
                 vuacache.put(prefix_trimmed, kvcache_layers)
+                logger.info("PUT took %r seconds" % (time.time() - before_put))
 
             #
             # Currently ignoring:
@@ -111,8 +121,10 @@ class RemoteStorageConnector(KVConnectorBase):
     ) -> Tuple[Union[torch.Tensor, IntermediateTensors], bool,
                "ModelInputForGPUWithSamplingMetadata"]:
 
+        time_before = time.time()
         model_input, bypass_model_exec, hidden_or_intermediate_states = retrieve_kv(
             model_executable, model_input, self.cache_config, kv_caches, self.tp_size)
+        logger.info("VUA GET retrieve total took %r seconds" % (time.time() - time_before))
 
         return hidden_or_intermediate_states, bypass_model_exec, model_input
 
@@ -236,7 +248,9 @@ def retrieve_kv(
             logger.warning(f"GET {prefix_trimmed} vllm_num_computed_tokens={vllm_num_computed_tokens}")
 
             if not skip_cache:
+                time_before = time.time()
                 res = vuacache.get_closest(prefix_trimmed, model_input.input_tokens.device)
+                logger.info("VUA GET took %r seconds" % (time.time() - time_before))
             else:
                 res = None
 
