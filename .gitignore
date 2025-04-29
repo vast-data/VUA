@@ -12,3 +12,4 @@ wheels/
 /vua.tmp
 /src-dist
 /src/vua/_version.py
+/local_storage
