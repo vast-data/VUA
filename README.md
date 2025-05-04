@@ -6,13 +6,48 @@
 
 # VUA
 
-VUA is a system for storing and retrieving key-value caches of deep learning models, utilizing a directory structure derived from token values.
+VUA is library code for LLM inference engines for external storage of KV caches.
 
-## Developer Quick Start
 
-1. **Understanding VUA**
+## VUA as plugin to vLLM 0.8.5 and above
 
-   VUA splits tokens into groups defined by a fixed split factor (see `VUAConfig.split_factor`). Tokens are converted to directory names where cache data is stored. The `put()` method splits key-value caches and stores fragmented tensor data into these directories, while `get_closest()` fetches the closest matching cache fragment based on supplied token prefixes.
+With vLLM 0.8.5 and above, the following is supported:
+
+- Prefix search (chunk size is based on `--max-num-batched-tokens` parameter).
+- Tensor parallelism
+- KV cache load via GDS
+
+Utilize the vLLM KV Connector plugin by importing it before running vLLM.
+
+```
+from vua.vllm.kv_connector_v1 import VUAStorageConnector_V1
+```
+
+**Or** use the wrapper that comes with this package:
+
+```
+bin/vua-vllm serve <parameters>
+```
+
+Where in `parameters`, you can pass the KV connector configuration, e.g:
+
+```
+--kv-transfer-config '{"kv_connector":"VUAStorageConnector_V1","kv_role":"kv_both","kv_connector_extra_config": {"shared_storage_path": "/mnt/shared-storage"}}'
+```
+
+See [guide](doc/kv-connector-v1.md) on how to see to measure performance using this connector.
+
+
+## Standalone VUA Core
+
+There is also standalone library code that LLM engines can use.
+
+
+### Developer Quick Start
+
+1. **Understanding VUA core**
+
+   VUA splits tokens into groups defined by a fixed split factor (see `VUAConfig.split_factor`). Token prefixes are hashes and converted to directory names where cache data is stored. The `put()` method splits key-value caches and stores fragmented tensor data into these directories, while `get_closest()` fetches the closest matching cache fragment based on supplied token prefixes.
 
 2. **Exploring the Codebase**
 
@@ -73,7 +108,7 @@ VUA is a system for storing and retrieving key-value caches of deep learning mod
    uv run python ./example/on-transformers.py
    ```
 
-   - Usage to experimental vLLM connector for offline kvcache storage
+   - Usage to experimental vLLM V0 connector for offline kvcache storage using VUA core:
 
    ```
    uv run ./example/serve-vllm.sh
@@ -89,4 +124,3 @@ VUA is a system for storing and retrieving key-value caches of deep learning mod
 VUA is released under the Apache License Version 2.0.
 
 See the file LICENSE for more details.
-

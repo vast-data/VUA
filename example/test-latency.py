@@ -37,7 +37,7 @@ def req(index):
         temperature=0,  # <-- deterministic, no creativity
     )
     after = time.time()
-    logger.info(f"Response time: {after - before} secs")
+    logger.info("Response time: {:.3f} secs".format(after - before))
 
 
 def main():
