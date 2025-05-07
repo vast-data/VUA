@@ -120,7 +120,7 @@ def tensor_to_bytes_aligned(t: torch.Tensor, name: str) -> memoryview:
     )
 
     # Copy tensor data directly
-    np.copyto(aligned_data, t.flatten().contiguous().cpu())
+    np.copyto(aligned_data, t.flatten())
     eof = len(header) + meta_len + t.numel() * t.element_size()
     return aligned[:eof]
 
@@ -158,3 +158,41 @@ def bytes_to_tensor(b, name):
 
     array = np.frombuffer(data_bytes, dtype=dtype).reshape(shape)
     return torch.from_numpy(np.array(array))
+
+def tensor_header_bytes(t: torch.Tensor, name: str) -> bytes:
+    dtype = t.dtype
+    if dtype is np.float16 or dtype is torch.float16:
+        dtype = "F16"
+    elif dtype is np.float32 or dtype is torch.float32:
+        dtype = "F32"
+    elif dtype is torch.bfloat16:
+        dtype = "BF16"
+    elif dtype is np.int64 or dtype is torch.int64:
+        dtype = "I64"
+    elif dtype is np.int32 or dtype is torch.int32:
+        dtype = "I32"
+    elif dtype is np.int16 or dtype is torch.int16:
+        dtype = "I16"
+    elif dtype is np.uint64 or dtype is torch.uint64:
+        dtype = "U64"
+    elif dtype is np.uint32 or dtype is torch.uint32:
+        dtype = "U32"
+    elif dtype is np.uint16 or dtype is torch.uint16:
+        dtype = "U16"
+    else:
+        raise Exception(f"unhandled dtype {dtype}")
+
+    # Metadata
+    data_size = t.numel() * t.element_size()
+    tensor_meta = {
+        'dtype': dtype,
+        'shape': list(t.size()),
+        'data_offsets': [0, data_size],
+    }
+    meta = {name: tensor_meta}
+    str_meta = json.dumps(meta).encode('utf-8')
+    meta_len = len(str_meta)
+    str_meta += b' ' * ((8 - (meta_len % 8)) % 8)
+    meta_len = len(str_meta)
+    header = struct.pack('L', meta_len)
+    return (header + str_meta, data_size)
