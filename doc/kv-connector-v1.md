@@ -26,7 +26,7 @@ First query will take time to write KV cache to the storage path because the cac
 ```
 $ ./example/test-latency.py 127.0.0.1:8080
 ...
-Response time: 37.538 secs
+Response time: 14.83 secs
 
 $ ls -l /mnt/nfsrdma/
 total 0

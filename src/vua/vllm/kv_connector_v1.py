@@ -14,6 +14,8 @@ import time
 import safetensors
 import torch
 import itertools
+import ctypes
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Optional
@@ -200,6 +202,9 @@ class VUAStorageConnector_V1(KVConnectorBase_V1):
         self._storage_path = transfer_config.get_from_extra_config(
             "shared_storage_path", "/tmp")
         self.kv_caches: dict[str, torch.Tensor] = {}
+        self.background_writes: dict[str, torch.Tensor] = {}
+        from concurrent.futures import ThreadPoolExecutor
+        self._threadpool = ThreadPoolExecutor(max_workers=64)
         logger.info(vllm_config.kv_transfer_config)
         self._rank_prefix = str(vllm_config.parallel_config.rank) + "%"
         logger.info("Shared storage path is %s, rank %d", self._storage_path,
@@ -383,53 +388,95 @@ class VUAStorageConnector_V1(KVConnectorBase_V1):
 
         connector_metadata = self._get_connector_metadata()
         assert isinstance(connector_metadata, SharedStorageConnectorMetadata)
+
         for request in connector_metadata.requests:
             if request.is_store:
                 (hash_layer_name, filename) = self._generate_filename_debug(
-                    layer_name, request.token_ids[:len(request.slot_mapping)],
-                    create_folder=True)
+                    layer_name, request.token_ids[:len(request.slot_mapping)])
                 if layer_name in ["model.layers.0.self_attn.attn"]:
                     logger.info(f"save_kv_layer: request.slot_mapping.size()={request.slot_mapping.size()} filename={filename}")
                 if os.path.exists(filename):
                     continue
 
                 partial_slot_mapping = request.slot_mapping[request.existing_token_ids:]
-                start_time = time.time()
-                kv_cache = extract_kv_from_layer(kv_layer, partial_slot_mapping)
-                extract_time = time.time()
-                self.kv_caches[layer_name] = (filename, hash_layer_name, kv_cache.detach().cpu())
-                detach_time = time.time()
-                if layer_name in ["model.layers.0.self_attn.attn"]:
-                    logger.info(f"save_kv_layer: timing: %.3f %.3f" % (extract_time - start_time,
-                                                                       detach_time - extract_time))
+
+                def worker(kv_layer, hash_layer_name, filename, layer_name, partial_slot_mapping):
+                    if self._check_disable_extract():
+                        return None
+
+                    kv_cache = extract_kv_from_layer(kv_layer, partial_slot_mapping)
+                    if self._check_disable_download():
+                        return None
+
+                    tensor = kv_cache.detach().to('cpu', non_blocking=True)
+                    return [tensor, filename, hash_layer_name]
+
+                self.kv_caches[layer_name] = self._threadpool.submit(
+                    worker, kv_layer, hash_layer_name, filename, layer_name, partial_slot_mapping)
 
     def wait_for_save(self):
-        logger.info(f"wait_for_save: {len(self.kv_caches)} files")
-        tensors = list(self.kv_caches.values())
-        if len(tensors) > 0:
-            from concurrent.futures import ThreadPoolExecutor, as_completed
-            from vua.serdes import tensor_to_bytes_aligned
+        logger.info(f"wait_for_save: {len(self.kv_caches)} tensors")
+        futures = list(self.background_writes.values())
+        self.background_writes = {}
+        if futures:
+            logger.info(f"save_kv_layer: syncing for previous file writes")
+            start = time.time()
+            _ = [fut.result() for fut in as_completed(futures)]
+            logger.info(f"save_kv_layer: file sync done %.3f secs" % (time.time() - start))
 
-            total_bytes = [0]
-
-            # Create tensor files and write them using O_DIRECT in parallel
-            def async_writer(filename, hash_layer_name, tensor):
-                content = tensor_to_bytes_aligned(tensor, hash_layer_name)
-                fd = os.open(filename, os.O_WRONLY | os.O_CREAT | os.O_DIRECT, 0o644)
-                total_bytes[0] += len(content)
-                try:
-                    os.write(fd, content)
-                finally:
-                    os.close(fd)
-
-            with ThreadPoolExecutor(max_workers=len(tensors)) as executor:
-                futures = [executor.submit(async_writer, filename, hash_layer_name, tensor)
-                        for filename, hash_layer_name, tensor in tensors]
-                for fut in as_completed(futures):
-                    fut.result()
-            logger.info(f"wait_for_save: saving {len(self.kv_caches)} files done, {total_bytes[0]/0x100000} MB")
-
+        futures = list(self.kv_caches.values())
         self.kv_caches = {}
+        if not futures:
+            return
+
+        start = time.time()
+        tensors = [fut.result() for fut in as_completed(futures)]
+        logger.info(f"wait_for_save: tensor finish: %.3f secs" % (time.time() - start))
+
+        def worker(tensor, filename, hash_layer_name):
+            if self._check_disable_save():
+                return
+
+            from vua.serdes import tensor_header_bytes
+            start = time.time()
+            (header, data_size) = tensor_header_bytes(tensor, hash_layer_name)
+
+            if self._check_disable_write():
+                return
+
+            ptr = tensor.data_ptr()
+            buf = (ctypes.c_char * data_size).from_address(ptr)
+            data = memoryview(buf).cast('B')
+            os.makedirs(os.path.dirname(filename), exist_ok=True)
+
+            def eager_write(fd: int, data: memoryview) -> int:
+                total_written = 0
+                while total_written < len(data):
+                    try:
+                        written = os.write(fd, data[total_written:])
+                    except InterruptedError:
+                        continue  # Retry on EINTR
+                    if written == 0:
+                        raise RuntimeError("write() returned 0, device may be full or closed")
+                    total_written += written
+                return total_written
+
+            fd = os.open(filename, os.O_WRONLY | os.O_CREAT, 0o644)
+            try:
+                eager_write(fd, header)
+                eager_write(fd, data)
+            finally:
+                os.close(fd)
+
+            logger.debug(f"wait_for_save: took %.3f secs to write, for tensor %r" % (time.time() - start), tensor.size())
+
+        # Send file writes to the background
+        for args in tensors:
+            if args is None:
+                continue
+            [tensor, filename, hash_layer_name] = args
+            self.background_writes[hash_layer_name] = \
+                self._threadpool.submit(worker, tensor, filename, hash_layer_name)
 
     def get_num_new_matched_tokens(
         self,
@@ -614,7 +661,7 @@ class VUAStorageConnector_V1(KVConnectorBase_V1):
         num_tokens_to_check = align_to_size(
             len(token_ids) - diff, self._max_num_batched_tokens)
         foldername = self._generate_foldername_debug(torch.tensor(
-            token_ids)[:num_tokens_to_check], create_folder=False)
+            token_ids)[:num_tokens_to_check])
         return os.path.exists(foldername)
 
     def _search_matching_prefix(
@@ -632,7 +679,7 @@ class VUAStorageConnector_V1(KVConnectorBase_V1):
         for i in range(0, token_groups_to_check):
             end_token = self._max_num_batched_tokens * (i + 1)
             foldername = self._generate_foldername_debug(torch.tensor(
-                token_ids)[:end_token], create_folder=False)
+                token_ids)[:end_token])
             if not os.path.exists(foldername):
                 break
             matches = end_token
@@ -641,7 +688,6 @@ class VUAStorageConnector_V1(KVConnectorBase_V1):
     def _generate_foldername_debug(
         self,
         input_ids: torch.Tensor,
-        create_folder=False,
     ) -> str:
         """Generate a folder name based on the hash of the bytes of the input
         ids.
@@ -649,21 +695,17 @@ class VUAStorageConnector_V1(KVConnectorBase_V1):
         input_ids_bytes = input_ids.numpy().tobytes()
         input_ids_hash = self._rank_prefix + hashlib.sha1(input_ids_bytes).hexdigest()
         foldername = os.path.join(self._storage_path, input_ids_hash)
-        if create_folder:
-            os.makedirs(foldername, exist_ok=True)
         return foldername
 
     def _generate_filename_debug(
         self,
         layer_name: str,
         input_ids: torch.Tensor,
-        create_folder=False,
     ) -> (str, str):
         """Generate a file name based on the layer name and the hash
         of the bytes of the input ids.
         """
-        foldername = self._generate_foldername_debug(input_ids,
-                                                     create_folder=create_folder)
+        foldername = self._generate_foldername_debug(input_ids)
         hash_layer_name = os.path.basename(foldername) + "." + layer_name
         return (hash_layer_name, os.path.join(foldername, f"{layer_name}.safetensors"))
 
@@ -675,7 +717,7 @@ class VUAStorageConnector_V1(KVConnectorBase_V1):
         """Generate a file name based on the layer name and the hash
         of the bytes of the input ids.
         """
-        foldername = self._generate_foldername_debug(input_ids, create_folder=False)
+        foldername = self._generate_foldername_debug(input_ids)
         return os.path.basename(foldername) + "." + layer_name
 
     def _check_disable_put(
@@ -685,6 +727,39 @@ class VUAStorageConnector_V1(KVConnectorBase_V1):
         of the bytes of the input ids.
         """
         return os.path.exists(os.path.join(self._storage_path, "disable-put"))
+
+
+    def _check_disable_download(
+        self,
+    ) -> bool:
+        """Generate a file name based on the layer name and the hash
+        of the bytes of the input ids.
+        """
+        return os.path.exists(os.path.join(self._storage_path, "disable-download"))
+
+    def _check_disable_write(
+        self,
+    ) -> bool:
+        """Generate a file name based on the layer name and the hash
+        of the bytes of the input ids.
+        """
+        return os.path.exists(os.path.join(self._storage_path, "disable-write"))
+
+    def _check_disable_save(
+        self,
+    ) -> bool:
+        """Generate a file name based on the layer name and the hash
+        of the bytes of the input ids.
+        """
+        return os.path.exists(os.path.join(self._storage_path, "disable-save"))
+
+    def _check_disable_extract(
+        self,
+    ) -> bool:
+        """Generate a file name based on the layer name and the hash
+        of the bytes of the input ids.
+        """
+        return os.path.exists(os.path.join(self._storage_path, "disable-extract"))
 
 
     def _check_disable_get(
