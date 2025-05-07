@@ -389,20 +389,46 @@ class VUAStorageConnector_V1(KVConnectorBase_V1):
                     layer_name, request.token_ids[:len(request.slot_mapping)],
                     create_folder=True)
                 if layer_name in ["model.layers.0.self_attn.attn"]:
-                    logger.info(f"SAVE KV LAYER request.slot_mapping.size()={request.slot_mapping.size()} filename={filename}")
+                    logger.info(f"save_kv_layer: request.slot_mapping.size()={request.slot_mapping.size()} filename={filename}")
                 if os.path.exists(filename):
                     continue
 
                 partial_slot_mapping = request.slot_mapping[request.existing_token_ids:]
+                start_time = time.time()
                 kv_cache = extract_kv_from_layer(kv_layer, partial_slot_mapping)
-                tensors = {hash_layer_name: kv_cache.detach().cpu()}
-                self.kv_caches[layer_name] = (filename, tensors)
+                extract_time = time.time()
+                self.kv_caches[layer_name] = (filename, hash_layer_name, kv_cache.detach().cpu())
+                detach_time = time.time()
+                if layer_name in ["model.layers.0.self_attn.attn"]:
+                    logger.info(f"save_kv_layer: timing: %.3f %.3f" % (extract_time - start_time,
+                                                                       detach_time - extract_time))
 
     def wait_for_save(self):
         logger.info(f"wait_for_save: {len(self.kv_caches)} files")
-        # TODO: save in parallel and use async IO
-        for (layer_name, (filename, tensors)) in list(self.kv_caches.items()):
-            safetensors.torch.save_file(tensors, filename)
+        tensors = list(self.kv_caches.values())
+        if len(tensors) > 0:
+            from concurrent.futures import ThreadPoolExecutor, as_completed
+            from vua.serdes import tensor_to_bytes_aligned
+
+            total_bytes = [0]
+
+            # Create tensor files and write them using O_DIRECT in parallel
+            def async_writer(filename, hash_layer_name, tensor):
+                content = tensor_to_bytes_aligned(tensor, hash_layer_name)
+                fd = os.open(filename, os.O_WRONLY | os.O_CREAT | os.O_DIRECT, 0o644)
+                total_bytes[0] += len(content)
+                try:
+                    os.write(fd, content)
+                finally:
+                    os.close(fd)
+
+            with ThreadPoolExecutor(max_workers=len(tensors)) as executor:
+                futures = [executor.submit(async_writer, filename, hash_layer_name, tensor)
+                        for filename, hash_layer_name, tensor in tensors]
+                for fut in as_completed(futures):
+                    fut.result()
+            logger.info(f"wait_for_save: saving {len(self.kv_caches)} files done, {total_bytes[0]/0x100000} MB")
+
         self.kv_caches = {}
 
     def get_num_new_matched_tokens(
