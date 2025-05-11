@@ -14,7 +14,7 @@ bin/vua-vllm serve meta-llama/Llama-3.2-3B-Instruct \
 
 Notes:
 
-- This configuration disables prefix caching, so we can see the time different between external KV cache fetch and prefill stages.
+- This configuration disables prefix caching, so we can see the time difference between external KV cache fetch and prefill stages.
 - I used two GPUs. You may try a different model with a single GPU too.
 - Storage path configured here is NFS with [VAST NFS](https://vastnfs.vastdata.com/docs/4.0/index.html), but you can use any file system that supports GDS, or a local file system that does not support GDS.
 - Here we pass `--max-num-batched-tokens 30720` so that the KV cache for the query we are doing is split to 4 parts token-wise.
