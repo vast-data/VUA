@@ -482,7 +482,7 @@ class VUAStorageConnector_V1(KVConnectorBase_V1):
         self,
         request: "Request",
         num_computed_tokens: int,
-    ) -> int:
+    ) -> tuple[int, bool]:
         """
         Get number of new tokens that can be loaded from the
         external KV cache beyond the num_computed_tokens.
@@ -497,7 +497,7 @@ class VUAStorageConnector_V1(KVConnectorBase_V1):
             external KV cache beyond what is already computed.
         """
         if self._check_disable_get():
-            return 0
+            return 0, False
 
         # NOTE: in this implementation, we assume that the prompt is
         # cached_prompt + newly_generated_single_token
@@ -508,14 +508,14 @@ class VUAStorageConnector_V1(KVConnectorBase_V1):
         # num_computed_tokens to also be aligned with the block granularity.
         num_tokens_to_check = self._search_matching_prefix(request.prompt_token_ids, 1)
         if num_tokens_to_check == 0:
-            return 0
+            return 0, False
 
         if num_tokens_to_check == request.num_tokens:
             num_tokens_to_check -= 1
 
         logger.info(f"External Cache Hit: {num_tokens_to_check} tokens (computed: {num_computed_tokens})!")
         if num_computed_tokens > num_tokens_to_check:
-            return 0
+            return 0, False
 
         self.load_specs[request.request_id] = LoadSpec(
             vllm_cached_tokens=num_computed_tokens,
@@ -523,9 +523,10 @@ class VUAStorageConnector_V1(KVConnectorBase_V1):
 
         # Now, first num_tokens_to_check tokens are hit, we need to prepare
         # the metadata for the worker connector to correctly load the KV
-        return num_tokens_to_check - num_computed_tokens
+        return num_tokens_to_check - num_computed_tokens, False
 
     def update_state_after_alloc(self, request: "Request",
+                                 blocks: "KVCacheBlocks",
                                  num_external_tokens: int):
         """
         Update KVConnector state after block allocation.
