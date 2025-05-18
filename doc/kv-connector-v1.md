@@ -7,9 +7,9 @@ bin/vua-vllm serve meta-llama/Llama-3.2-3B-Instruct \
     --gpu-memory-utilization 0.85 \
     --tensor-parallel-size 2 \
     --api-key fke9dfkjw9rjqw94rtj29 \
-    --kv-transfer-config '{"kv_connector":"VUAStorageConnector_V1","kv_role":"kv_both","kv_connector_extra_config": {"shared_storage_path": "/mnt/nfsrdma"}}'
+    --kv-transfer-config '{"kv_connector":"VUAStorageConnector_V1","kv_role":"kv_both","kv_connector_extra_config": {"shared_storage_path": "/mnt/nfsrdma"}}' \
     --no-enable-prefix-caching \
-    --max-num-batched-tokens 30720 \
+    --max-num-batched-tokens 30720
 ```
 
 Notes:
