@@ -57,3 +57,17 @@ $ ./example/test-latency.py 127.0.0.1:8080
 ...
 Response time: 12.062 secs
 ```
+
+## Performance analysis
+
+We ran the test above with two A100-SXM4-40GB on a DGX system, and these are the results we got:
+
+- **KV cache size:** 14GB
+- **TTFT (Time To First Token) measurements:**
+    - Base vLLM without KV connector: **12.06 seconds total**
+        - Of which 10.1 seconds is prefill according to metrics
+    - vLLM + VUA KV write: **13.88 seconds total**
+    - vLLM + VUA KV read: **3.65 seconds total**
+        - Of which 1.12 seconds is KV load from storage
+
+These results demonstrate up to a 90% reduction in prefill latency time when utilizing GDS for loading KV cache from NFS RDMA. The percentage of decrease in TTFT is directly linked to the ratio between the time it takes to recompute the KV cache in refill, and the time it would take to bring it from external storage onto the KV cache buffers.
