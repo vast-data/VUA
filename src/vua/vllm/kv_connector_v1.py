@@ -144,6 +144,10 @@ class RequestTracker:
     ) -> "RequestTracker":
         """Create the request tracker from a new request.
 
+        # vLLM 0.9.0 update: request.block_ids changed from list[int] to
+        # list[list[int]]
+        # Need to check the type of request.block_ids
+
         Args:
             new_request (NewRequestData): the new request data.
             num_tokens_to_compute (int): the number of tokens that will
@@ -151,11 +155,25 @@ class RequestTracker:
                 local cache hit) and new tokens that will be scheduled.
 
         """
+        unfolded_block_ids = []
+        if not isinstance(new_request.block_ids[0], list):
+            unfolded_block_ids = new_request.block_ids.copy()
+        else:
+            # According to the vLLM code
+            # (https://github.com/vllm-project/vllm/blob/main/vllm/v1/core/
+            # sched/scheduler.py#L943),
+            # only one KVCacheGroup is supported in connector for now.
+
+            # TODO: Please support multiple KVCacheGroup in connector.
+            # NOTE: Also, `update` method in RequestTracker should be
+            # updated accordingly.
+            unfolded_block_ids = new_request.block_ids[0].copy()
+
         return RequestTracker(
             req_id=new_request.req_id,
             token_ids=new_request.prompt_token_ids[:num_tokens_to_compute]
             .copy(),
-            allocated_block_ids=new_request.block_ids.copy(),
+            allocated_block_ids=unfolded_block_ids,
         )
 
     def update(
@@ -166,7 +184,12 @@ class RequestTracker:
         scheduled again
         """
         self.token_ids.extend(cached_request.new_token_ids)
-        self.allocated_block_ids.extend(cached_request.new_block_ids)
+        new_block_ids: list[int]
+        if not isinstance(cached_request.new_block_ids[0], list):
+            new_block_ids = cached_request.new_block_ids
+        else:
+            new_block_ids = cached_request.new_block_ids[0]
+        self.allocated_block_ids.extend(new_block_ids)
 
 
 @dataclass
@@ -580,9 +603,15 @@ class VUAStorageConnector_V1(KVConnectorBase_V1):
                 new_req, num_tokens_to_compute)
             self._request_trackers[new_req.req_id] = request_tracker
 
+            # vLLM 0.9.0 update: new_req.block_ids may be list[list[int]]
+            if not isinstance(new_req.block_ids[0], list):
+                block_ids = new_req.block_ids
+            else:
+                block_ids = new_req.block_ids[0]
+
             if in_need_load:
                 meta.add_request(token_ids=new_req.prompt_token_ids,
-                                 block_ids=new_req.block_ids,
+                                 block_ids=block_ids,
                                  block_size=self._block_size,
                                  chunk_size=self._max_num_batched_tokens,
                                  is_store=False,
@@ -594,7 +623,7 @@ class VUAStorageConnector_V1(KVConnectorBase_V1):
                 # but a single request can have both store and load.
                 if not self._found_match_for_request(new_req.prompt_token_ids, 1):
                     meta.add_request(token_ids=new_req.prompt_token_ids,
-                                     block_ids=new_req.block_ids,
+                                     block_ids=block_ids,
                                      block_size=self._block_size,
                                      chunk_size=self._max_num_batched_tokens,
                                      is_store=True,
@@ -604,6 +633,7 @@ class VUAStorageConnector_V1(KVConnectorBase_V1):
         for cached_req in scheduler_output.scheduled_cached_reqs:
             request_tracker = self._request_trackers[cached_req.req_id]
             prev_token_id_len = len(request_tracker.token_ids)
+            # vLLM 0.9.0 update: cached_req.new_block_ids may be list[list[int]]
             request_tracker.update(cached_req)
             logger.info(f"build_connector_meta: cached {cached_req.req_id}, {cached_req.resumed_from_preemption} prev_token_id_len={prev_token_id_len}, now {len(request_tracker.token_ids)}")
 
@@ -622,7 +652,11 @@ class VUAStorageConnector_V1(KVConnectorBase_V1):
 
                 # NOTE(rob): For resumed req, new_block_ids is all
                 # of the block_ids for the request.
-                block_ids = cached_req.new_block_ids
+                # vLLM 0.9.0 update: cached_req.new_block_ids may be list[list[int]]
+                if not isinstance(cached_req.new_block_ids[0], list):
+                    block_ids = cached_req.new_block_ids
+                else:
+                    block_ids = cached_req.new_block_ids[0]
 
                 meta.add_request(token_ids=token_ids,
                                  block_ids=block_ids,
