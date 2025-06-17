@@ -8,6 +8,10 @@
 
 VUA is library code for LLM inference engines for external storage of KV caches.
 
+**NOTE: The functionality of the VUA vLLM connector is now consolidated into the generic [GDS Backend of LMCache](https://docs.lmcache.ai/kv_cache/gds.html).**
+
+
+## Developer Quick Start
 
 ## VUA as plugin to vLLM 0.8.5 and above
 
