@@ -1,6 +1,9 @@
-<p align="center">
+### Since this was published, we’ve launched an updated solution. Check out: [NVIDIA Dynamo + VAST = Scalable, Optimized Inference](https://www.vastdata.com/blog/nvidia-dynamo-vast-scalable-optimized-inference).
+
+
+<!-- <p align="center">
   <img src="static/vast_stacked_logo_hex_white.jpg" alt="VAST DATA Logo" width="50%"/>
-</p>
+</p> -->
 
 ---
 
